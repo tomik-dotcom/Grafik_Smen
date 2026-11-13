@@ -53,7 +53,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var textScale by mutableFloatStateOf(1f); private set
     var selectedCurrency by mutableStateOf(Currency.RUB); private set
 
-    var monthlyBonus by mutableDoubleStateOf(0.0); private set
+    // Храним премии отдельно для каждого месяца (ключ "YYYY-MM" -> сумма)
+    var monthlyBonuses by mutableStateOf(emptyMap<String, Double>()); private set
+
+    // Возвращает премию только для текущего открытого в календаре месяца
+    val monthlyBonus: Double
+        get() = monthlyBonuses[currentMonth.toString()] ?: 0.0
+
     var hourlyRate by mutableDoubleStateOf(250.0); private set
 
     var baseColor by mutableLongStateOf(0xFF3F51B5); private set
@@ -110,7 +116,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadData() {
         hasSeenTutorial = prefs.getBoolean("hasSeenTutorial", false)
         hourlyRate = prefs.getFloat("hourlyRate", 250f).toDouble()
-        monthlyBonus = prefs.getFloat("monthlyBonus", 0f).toDouble()
         textScale = prefs.getFloat("textScale", 1f)
         currentTheme = AppTheme.valueOf(prefs.getString("theme", AppTheme.DARK.name) ?: AppTheme.DARK.name)
         currentCellShape = CellShape.valueOf(prefs.getString("cellShape", CellShape.ROUNDED.name) ?: CellShape.ROUNDED.name)
@@ -119,6 +124,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         baseColor = prefs.getLong("baseColor", 0xFF3F51B5)
         tipsColor = prefs.getLong("tipsColor", 0xFF4CAF50)
         bonusColor = prefs.getLong("bonusColor", 0xFFFFC107)
+
+        // Загружаем премии по месяцам
+        val bonusesJson = prefs.getString("monthlyBonuses", null)
+        if (bonusesJson != null) {
+            try {
+                val jsonMap = JSONObject(bonusesJson)
+                val map = mutableMapOf<String, Double>()
+                val keys = jsonMap.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    map[key] = jsonMap.getDouble(key)
+                }
+                monthlyBonuses = map
+            } catch (_: Exception) {}
+        }
 
         val colJson = prefs.getString("colleagues", null)
         if (colJson != null) {
@@ -163,7 +183,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val listForSave = shifts.map { ShiftPair(it.key.toString(), it.value) }
         prefs.edit().apply {
             putFloat("hourlyRate", hourlyRate.toFloat())
-            putFloat("monthlyBonus", monthlyBonus.toFloat())
+            putString("monthlyBonuses", gson.toJson(monthlyBonuses))
             putFloat("textScale", textScale)
             putString("theme", currentTheme.name)
             putString("cellShape", currentCellShape.name)
@@ -191,7 +211,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateTextScale(scale: Float) { textScale = scale; saveData() }
     fun changeCurrency(curr: Currency) { selectedCurrency = curr; saveData() }
     fun updateHourlyRate(newRate: Double) { hourlyRate = newRate * getExchangeRate(); saveData() }
-    fun updateMonthlyBonus(bonus: Double) { monthlyBonus = bonus * getExchangeRate(); saveData() }
+
+    // Сохраняет премию строго для текущего выбранного месяца
+    fun updateMonthlyBonus(bonus: Double) {
+        val map = monthlyBonuses.toMutableMap()
+        val rawBonus = bonus * getExchangeRate()
+        if (rawBonus <= 0.0) {
+            map.remove(currentMonth.toString())
+        } else {
+            map[currentMonth.toString()] = rawBonus
+        }
+        monthlyBonuses = map
+        saveData()
+    }
+
     fun updateChartColors(newBase: Long, newTips: Long, newBonus: Long) { baseColor = newBase; tipsColor = newTips; bonusColor = newBonus; saveData() }
 
     fun updateMonthBackground(month: YearMonth, uriString: String?) {
@@ -232,7 +265,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun getMonthlyStats(): Pair<Double, Double> {
         val monthShifts = shifts.filterKeys { YearMonth.from(it) == currentMonth }.values
         val totalHours = monthShifts.sumOf { it.hoursWorked }
-        val rawMoney = monthShifts.sumOf { it.calculateEarnings(hourlyRate) } + monthlyBonus
+        val currentMonthBonus = monthlyBonuses[currentMonth.toString()] ?: 0.0
+        val rawMoney = monthShifts.sumOf { it.calculateEarnings(hourlyRate) } + currentMonthBonus
         return Pair(totalHours, rawMoney / getExchangeRate(selectedCurrency))
     }
 
@@ -250,7 +284,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val rate = getExchangeRate(selectedCurrency)
-        return Triple(base / rate, monthShifts.sumOf { it.tips } / rate, monthlyBonus / rate)
+        val currentMonthBonus = monthlyBonuses[currentMonth.toString()] ?: 0.0
+        return Triple(base / rate, monthShifts.sumOf { it.tips } / rate, currentMonthBonus / rate)
     }
 }
 
